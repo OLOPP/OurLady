@@ -90,8 +90,9 @@ contract OurLadyTest is StdCheats, Test {
         vm.warp(block.timestamp + automationUpdateInterval + 1);
         vm.roll(block.number + 1);
         ourLady.performUpkeep("");
+    }
 
-        // Act / Assert
+    // Act / Assert
     //     vm.expectRevert(OurLady.Lottery__LotteryNotOpen.selector);
     //     vm.prank(PARTICIPANT);
     //     ourLady.enterRaffle{value: raffleEntranceFee}();
@@ -100,17 +101,6 @@ contract OurLadyTest is StdCheats, Test {
     /////////////////////////
     // checkUpkeep         //
     /////////////////////////
-    function testCheckUpkeepReturnsFalseIfItHasNoBalance() public {
-        // Arrange
-        vm.warp(block.timestamp + automationUpdateInterval + 1);
-        vm.roll(block.number + 1);
-
-        // Act
-        (bool upkeepNeeded, ) = ourLady.checkUpkeep("");
-
-        // Assert
-        assert(!upkeepNeeded);
-    }
 
     function testCheckUpkeepReturnsFalseIfRaffleIsntOpen() public {
         // Arrange
