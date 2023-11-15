@@ -7,25 +7,23 @@
  */
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.23;
+pragma solidity ^0.8.21;
 
 import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import {AutomationCompatibleInterface} from "@chainlink/contracts/src/v0.8/interfaces/AutomationCompatibleInterface.sol";
+
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+
 import {IUniswapV2Router02} from "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import {IUniswapV2Factory} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
-import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 
 abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
-    IUniswapV2Router02 uniswapV2Router;
-    address public uniswapV2Pair;
-    address payable public ourLadyRewardsWallet;
-    uint256 public deploymentTime;
-
     /* Errors */
     error OurLady__UpkeepNotNeeded(
         uint256 currentEthBalance,
@@ -34,7 +32,6 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         uint256 lotteryState
     );
     error OurLady__TransferFailed();
-    //error OurLady__SendMoreToEnterLottery();
     error OurLady__LotteryNotOpen();
 
     /* Type declarations */
@@ -48,8 +45,14 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     uint256 public constant INITIAL_TAX_RATE = 200; // 2%
     uint256 public constant REDUCED_TAX_RATE = 100; // 1%
     uint256 public constant TAX_REDUCTION_TIME = 30 days;
-    uint256 public constant MIN_ETH_BALANCE = 0.15 ether;
+    uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
     uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
+
+    IUniswapV2Router02 uniswapV2Router;
+    address public immutable uniswapV2Pair;
+    address payable public ourLadyRewardsWallet;
+    uint256 public deploymentTime;
+    bool public tradingEnabled = false;
 
     // Chainlink VRF Variables
     VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
@@ -57,7 +60,11 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     bytes32 private immutable i_gasLane; // aka 'keyHash'
     uint32 private immutable i_callbackGasLimit;
     uint16 private constant REQUEST_CONFIRMATIONS = 3;
-    uint32 private constant NUM_WORDS = 1;
+    uint32 private constant NUM_WORDS = 2;
+    address private constant LINK_TOKEN =
+        0x514910771AF9Ca656af840dff83E8264EcF986CA; //use this if price feed used
+    address private constant ETH_LINK_PRICE_FEED =
+        0xDC530D9457755926550b59e8ECcdaE7624181557;
 
     // Lottery Variables
     uint256 private immutable i_interval; // do i need this?
@@ -68,7 +75,11 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
 
     /* Events */
     event RequestedLotteryWinner(uint256 indexed requestId);
-    event LotteryEnter(address indexed participant);
+    event LotteryEnter(
+        address indexed participant,
+        uint256 amount,
+        uint256 timestamp
+    );
     event WinnerSelected(address indexed participant);
 
     constructor(
@@ -121,7 +132,7 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         for (uint256 i = 0; i < entries; i++)
             s_participants.push(payable(msg.sender));
         // Emit an event when we update a dynamic array or mapping
-        emit LotteryEnter(msg.sender);
+        emit LotteryEnter(msg.sender, amount, block.timestamp);
     }
 
     function _transfer(
@@ -132,10 +143,10 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         // Check if sender or recipient is the contract itself, the owner, or the Uniswap pair
         bool isExemptFromHoldingLimit = (sender == address(this) ||
             recipient == address(this) ||
-            sender == owner ||
-            recipient == owner ||
-            sender == uniswapV2PairAddress ||
-            recipient == uniswapV2PairAddress);
+            sender == owner() ||
+            recipient == owner() ||
+            sender == uniswapV2Pair ||
+            recipient == uniswapV2Pair);
 
         if (!isExemptFromHoldingLimit) {
             require(
@@ -148,8 +159,8 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         bool isTaxExempt = isExemptFromHoldingLimit;
 
         // Check if this is a Uniswap trade
-        bool isUniswapTrade = (sender == uniswapV2PairAddress ||
-            recipient == uniswapV2PairAddress);
+        bool isUniswapTrade = (sender == uniswapV2Pair ||
+            recipient == uniswapV2Pair);
 
         uint256 tokensToTransfer = amount;
 
@@ -169,7 +180,7 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     function setUniswapPairAddress(
         address _uniswapPairAddress
     ) external onlyOwner {
-        uniswapV2PairAddress = _uniswapPairAddress;
+        uniswapV2Pair = _uniswapPairAddress;
     }
 
     /**
@@ -223,7 +234,7 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
                 address(this)
             ) < MINIMUM_LINK_BALANCE
         ) {
-            swapEthForExactLink();
+            maintainMinLinkBalance();
         }
         s_lotteryState = LotteryState.CALCULATING;
         uint256 requestId = i_vrfCoordinator.requestRandomWords(
@@ -233,7 +244,7 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
             i_callbackGasLimit,
             NUM_WORDS
         );
-        // Quiz... is this redundant?
+
         emit RequestedLotteryWinner(requestId);
     }
 
@@ -268,84 +279,95 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         return (amount * taxRate) / 10000;
     }
 
-    function swapTokensForEth(uint256 tokenAmount) private {
+    ////////////////////////////////////
+    // Ethereum Maintenance Functions //
+    ////////////////////////////////////
+
+    function maintainMinEthBalance() private {
+        uint256 contractEthBalance = address(this).balance;
+        if (contractEthBalance < MIN_ETH_BALANCE) {
+            uint256 ethAmount = (MIN_ETH_BALANCE - contractEthBalance);
+            uint256 tokenAmount = calculateEthToSwap(ethAmount);
+            swapTokensForExactEth(ethAmount, tokenAmount);
+        }
+    }
+
+    function calculateTokensToSwap(
+        uint256 ethAmount
+    ) private view returns (uint256) {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = uniswapV2Router.WETH();
+
+        // Note: The path is from token to ETH, but we're calculating the amount of tokens needed for a certain amount of ETH,
+        // so we need to reverse the amounts returned by getAmountsOut
+        uint[] memory amounts = uniswapV2Router.getAmountsIn(ethAmount, path);
+
+        return amounts[0];
+    }
+
+    function swapTokensForExactEth(
+        uint256 ethAmount,
+        uint256 tokenAmount
+    ) private {
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = uniswapV2Router.WETH();
 
         _approve(address(this), address(uniswapV2Router), tokenAmount);
 
-        uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uniswapV2Router.swapTokensForExactETH(
+            ethAmount,
             tokenAmount,
-            0,
             path,
             address(this),
             block.timestamp
         );
     }
 
-    function swapEthForExactLink(uint256 linkAmount) public payable {
-        address[] memory path = new address[](2);
-        path[0] = uniswapV2Router.WETH(); // Wrapped Ethereum
-        path[1] = 0x779877A7B0D9E8603169DdbD7836e478b4624789; // Address of the LINK token
+    ////////////////////////////////
+    // LINK Maintenance Functions //
+    ///////////////////////////////
 
-        uniswapV2Router.swapETHForExactTokens{value: msg.value}( // ETH sent with the transaction
-            5 * 10 ** 18, // For 5 LINK tokens
-            path,
-            address(this), // The contract
-            block.timestamp
+    function maintainMinLinkBalance() private {
+        IERC20 link = IERC20(LINK_TOKEN);
+        uint256 contractLinkBalance = link.balanceOf(address(this));
+        if (contractLinkBalance < MINIMUM_LINK_BALANCE) {
+            uint256 ethAmount = calculateEthToSwap(
+                MINIMUM_LINK_BALANCE - contractLinkBalance
+            );
+            swapEthForExactLink(ethAmount);
+        }
+    }
+
+    function calculateEthToSwap(
+        uint256 linkAmount
+    ) private view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            ETH_LINK_PRICE_FEED
+        );
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        return (linkAmount * uint256(price)) / 10 ** 18;
+    }
+
+    function swapEthForExactLink(uint256 ethAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = uniswapV2Router.WETH();
+        path[1] = LINK_TOKEN;
+
+        // Make sure the contract has enough Ether to perform the swap.
+        require(
+            address(this).balance >= ethAmount,
+            "Not enough Ether in contract for swap"
         );
 
-        // Refund leftover ETH to the sender
-        if (address(this).balance > 0) {
-            payable(msg.sender).transfer(address(this).balance);
-        }
+        uniswapV2Router.swapETHForExactTokens{value: ethAmount}(
+            MINIMUM_LINK_BALANCE,
+            path,
+            address(this),
+            block.timestamp
+        );
     }
-
-    function maintainMinEthBalance() public {
-        uint256 contractEthBalance = address(this).balance;
-        if (contractEthBalance < MIN_ETH_BALANCE) {
-            uint256 tokensToSwap = calculateTokensToSwap(
-                MIN_ETH_BALANCE - contractEthBalance
-            );
-            swapTokensForEth(tokensToSwap);
-        }
-    }
-
-    function calculateTokensToSwap(
-        address ourLadyRewards,
-        uint256 ethNeeded
-    ) public view returns (uint256) {
-        (uint112 reserve0, uint112 reserve1, ) = IUniswapV2Pair(uniswapV2Pair)
-            .getReserves();
-
-        // Identify which reserve is ETH and which is your token
-        uint256 reserveEth;
-        uint256 reserveToken;
-        if (uniswapV2Pair(uniswapV2Pair).token0() == address(this)) {
-            reserveToken = reserve0;
-            reserveEth = reserve1;
-        } else {
-            reserveToken = reserve1;
-            reserveEth = reserve0;
-        }
-
-        // Fetch the balance of OurLady tokens in the OurLadyRewards wallet
-        uint256 rewardsWalletBalance = balanceOf(ourLadyRewards);
-
-        // Ensure the rewards wallet has enough tokens
-        if (rewardsWalletBalance < ethNeeded) {
-            return 0; // Not enough tokens to swap
-        }
-
-        // Calculate the amount of tokens needed using the Uniswap formula
-        uint256 tokensToSwap = (reserveToken * ethNeeded) /
-            (reserveEth - ethNeeded);
-
-        return tokensToSwap;
-    }
-
-    receive() external payable {}
 
     /** Getter Functions */
 
@@ -384,4 +406,6 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     function getNumberOfParticipants() public view returns (uint256) {
         return s_participants.length;
     }
+
+    receive() external payable {}
 }

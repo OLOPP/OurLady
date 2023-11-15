@@ -1,5 +1,5 @@
 //SPDX-License-Identifier: MIT
-pragma solidity ^0.8.23;
+pragma solidity ^0.8.21;
 
 import {Script, console} from "forge-std/Script.sol";
 import {HelperConfig} from "./HelperConfig.s.sol";
@@ -8,40 +8,39 @@ import {DevOpsTools} from "../lib/foundry-devops/src/DevOpsTools.sol";
 import {VRFCoordinatorV2Mock} from "@chainlink/contracts/src/v0.8/mocks/VRFCoordinatorV2Mock.sol";
 import {LinkToken} from "../test/mocks/LinkToken.sol";
 
-contract CreateSubscription is Script {
-    function createSubscriptionUsingConfig() public returns (uint64) {
-        HelperConfig helperConfig = new HelperConfig();
-        (
-            ,
-            ,
-            ,
-            ,
-            ,
-            address vrfCoordinatorV2,
-            ,
-            uint256 deployerKey
-        ) = helperConfig.activeNetworkConfig();
-        return createSubscription(vrfCoordinatorV2, deployerKey);
-    }
+// contract CreateSubscription is Script {
+//     function createSubscriptionUsingConfig() public returns (uint64) {
+//         HelperConfig helperConfig = new HelperConfig();
+//         (
+//             ,
+//             ,
+//             ,
+//             ,
+//             address vrfCoordinatorV2,
+//             ,
+//             uint256 deployerKey
+//         ) = helperConfig.activeNetworkConfig();
+//         return createSubscription(vrfCoordinatorV2, deployerKey);
+//     }
 
-    function createSubscription(
-        address vrfCoordinatorV2,
-        uint256 deployerKey
-    ) public returns (uint64) {
-        console.log("Creating subscription on chainId: ", block.chainid);
-        vm.startBroadcast(deployerKey);
-        uint64 subId = VRFCoordinatorV2Mock(vrfCoordinatorV2)
-            .createSubscription();
-        vm.stopBroadcast();
-        console.log("Your subscription Id is: ", subId);
-        console.log("Please update the subscriptionId in HelperConfig.s.sol");
-        return subId;
-    }
+//     function createSubscription(
+//         address vrfCoordinatorV2,
+//         uint256 deployerKey
+//     ) public returns (uint64) {
+//         console.log("Creating subscription on chainId: ", block.chainid);
+//         vm.startBroadcast(deployerKey);
+//         uint64 subId = VRFCoordinatorV2Mock(vrfCoordinatorV2)
+//             .createSubscription();
+//         vm.stopBroadcast();
+//         console.log("Your subscription Id is: ", subId);
+//         console.log("Please update the subscriptionId in HelperConfig.s.sol");
+//         return subId;
+//     }
 
-    function run() external returns (uint64) {
-        return createSubscriptionUsingConfig();
-    }
-}
+//     function run() external returns (uint64) {
+//         return createSubscriptionUsingConfig();
+//     }
+// }
 
 contract AddConsumer is Script {
     function addConsumer(
@@ -68,7 +67,6 @@ contract AddConsumer is Script {
             ,
             ,
             ,
-            ,
             address vrfCoordinatorV2,
             ,
             uint256 deployerKey
@@ -92,7 +90,6 @@ contract FundSubscription is Script {
         HelperConfig helperConfig = new HelperConfig();
         (
             uint64 subId,
-            ,
             ,
             ,
             ,
