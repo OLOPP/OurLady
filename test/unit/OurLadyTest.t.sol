@@ -38,7 +38,6 @@ contract OurLadyTest is StdCheats, Test {
             ,
             gasLane,
             automationUpdateInterval,
-            // raffleEntranceFee,
             callbackGasLimit,
             vrfCoordinatorV2, // link
             // deployerKey

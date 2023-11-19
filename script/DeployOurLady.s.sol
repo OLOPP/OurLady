@@ -4,7 +4,7 @@ pragma solidity ^0.8.21;
 import {Script} from "forge-std/Script.sol";
 import {HelperConfig} from "../script/HelperConfig.s.sol";
 import {OurLady} from "../src/OurLady.sol";
-import {AddConsumer, FundSubscription} from "./Interactions.s.sol";
+import {AddConsumer, CreateSubscription, FundSubscription} from "./Interactions.s.sol";
 
 contract DeployOurLady is Script {
     function run() external returns (OurLady, HelperConfig) {
@@ -14,14 +14,13 @@ contract DeployOurLady is Script {
             uint64 subscriptionId,
             bytes32 gasLane,
             uint256 automationUpdateInterval,
-            //uint256 raffleEntranceFee,
             uint32 callbackGasLimit,
             address vrfCoordinatorV2,
             address link,
             uint256 deployerKey
         ) = helperConfig.activeNetworkConfig();
 
-        if (subscriptionId == 6725) {
+        if (subscriptionId == 0) {
             CreateSubscription createSubscription = new CreateSubscription();
             subscriptionId = createSubscription.createSubscription(
                 vrfCoordinatorV2,
@@ -39,9 +38,10 @@ contract DeployOurLady is Script {
 
         vm.startBroadcast(deployerKey);
         OurLady ourLady = new OurLady(
+            initialOwner,
             subscriptionId,
             gasLane,
-            automationUpdateInterval,
+            interval,
             callbackGasLimit,
             vrfCoordinatorV2
         );

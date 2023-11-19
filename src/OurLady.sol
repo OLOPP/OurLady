@@ -3,7 +3,7 @@
  * www.ourlady.io
  * twitter.com/ourladytoken
  * https://t.me/ourladytoken
- * @dev OurLadyToken is an irreverent but ethical and fair launched DeFi Token.
+ * @dev OurLadyToken is an irreverent but ethical and fair-launched hybrid utility/meme Token.
  */
 // SPDX-License-Identifier: MIT
 
@@ -23,77 +23,20 @@ import {IUniswapV2Router02} from "@uniswap/v2-periphery/contracts/interfaces/IUn
 import {IUniswapV2Factory} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 
-abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
-    /* Errors */
-    error OurLady__UpkeepNotNeeded(
-        uint256 currentEthBalance,
-        uint256 currentLinkBalance,
-        uint256 numParticipants,
-        uint256 lotteryState
-    );
-    error OurLady__TransferFailed();
-    error OurLady__LotteryNotOpen();
-
-    /* Type declarations */
-    enum LotteryState {
-        OPEN,
-        CALCULATING
-    }
-    /* State variables */
-
-    uint256 public constant MAX_HOLDING = 1e16; // 1% of total supply
-    uint256 public constant INITIAL_TAX_RATE = 200; // 2%
-    uint256 public constant REDUCED_TAX_RATE = 100; // 1%
-    uint256 public constant TAX_REDUCTION_TIME = 30 days;
-    uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
-    uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
-
-    IUniswapV2Router02 uniswapV2Router;
-    address public immutable uniswapV2Pair;
-    address payable public ourLadyRewardsWallet;
-    uint256 public deploymentTime;
-    bool public tradingEnabled = false;
-
-    // Chainlink VRF Variables
-    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
-    uint64 private immutable i_subscriptionId;
-    bytes32 private immutable i_gasLane; // aka 'keyHash'
-    uint32 private immutable i_callbackGasLimit;
-    uint16 private constant REQUEST_CONFIRMATIONS = 3;
-    uint32 private constant NUM_WORDS = 2;
-    address private constant LINK_TOKEN =
-        0x514910771AF9Ca656af840dff83E8264EcF986CA; //use this if price feed used
-    address private constant ETH_LINK_PRICE_FEED =
-        0xDC530D9457755926550b59e8ECcdaE7624181557;
-
-    // Lottery Variables
-    uint256 private immutable i_interval; // do i need this?
-    uint256 private s_lastTimeStamp; // I won't need This?
-    address private s_recentWinner;
-    address payable[] private s_participants;
-    LotteryState private s_lotteryState;
-
-    /* Events */
-    event RequestedLotteryWinner(uint256 indexed requestId);
-    event LotteryEnter(
-        address indexed participant,
-        uint256 amount,
-        uint256 timestamp
-    );
-    event WinnerSelected(address indexed participant);
-
+contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     constructor(
+        address initialOwner,
         uint64 subscriptionId,
         bytes32 gasLane, // keyHash
         uint256 interval,
-        // uint256 entranceFee,
         uint32 callbackGasLimit,
         address vrfCoordinatorV2
     )
-        ERC20("Our Lady of Perpetual Profit", "OurLady")
+        ERC20("Our Lady Of Perpetual Profit", "OURLADY")
+        Ownable(initialOwner)
         VRFConsumerBaseV2(vrfCoordinatorV2)
     {
-        _mint(msg.sender, 1e12 * (10 ** uint256(decimals()))); // 1 trillion tokens
+        _mint(msg.sender, 10 * 10 ** 27); //10 Billion Tokens
         deploymentTime = block.timestamp;
 
         // Initialize Uniswap V2 Router
@@ -117,22 +60,98 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         i_callbackGasLimit = callbackGasLimit;
     }
 
+    /* State variables */
+
+    uint256 public constant MAX_HOLDING = 1e16; // 1% of total supply
+    uint256 public constant INITIAL_TAX_RATE = 200; // 2%
+    uint256 public constant REDUCED_TAX_RATE = 100; // 1%
+    uint256 public constant TAX_REDUCTION_TIME = 30 days;
+    uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
+    uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
+
+    IUniswapV2Router02 uniswapV2Router;
+    address public uniswapV2Pair;
+    address payable public ourLadyRewardsWallet;
+    uint256 public deploymentTime;
+    bool public tradingEnabled = false;
+
+    // Chainlink VRF Variables
+    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
+    uint64 private immutable i_subscriptionId;
+    bytes32 private immutable i_gasLane; // aka 'keyHash'
+    uint32 private immutable i_callbackGasLimit;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3;
+    uint32 private constant NUM_WORDS = 2;
+    address private constant LINK_TOKEN =
+        0x514910771AF9Ca656af840dff83E8264EcF986CA; //use this if price feed used
+    address private constant ETH_LINK_PRICE_FEED =
+        0xDC530D9457755926550b59e8ECcdaE7624181557;
+
+    // Lottery Variables
+    uint256 private immutable i_interval; // do i need this?
+    uint256 private s_lastTimeStamp; // I won't need This?
+    address private s_recentWinner;
+    address payable[] private s_participants;
+    LotteryState private s_lotteryState;
+    address[] public participants;
+
+    /* Errors */
+    error OurLady__UpkeepNotNeeded(
+        uint256 currentEthBalance,
+        uint256 currentLinkBalance,
+        uint256 numParticipants,
+        uint256 lotteryState
+    );
+    error OurLady__TransferFailed();
+    error OurLady__LotteryNotOpen();
+
+    /* Type declarations */
+    enum LotteryState {
+        OPEN,
+        CALCULATING
+    }
+
+    /* Events */
+    event RequestedLotteryWinner(uint256 indexed requestId);
+    event LotteryEnter(
+        address indexed participant,
+        uint256 amount,
+        uint256 timestamp
+    );
+    event WinnerSelected(
+        address indexed participant,
+        uint256 randomNum,
+        uint256 timestamp
+    );
+
     /* Functions */
 
     function renounceOwnership() public override onlyOwner {
         super.renounceOwnership();
     }
 
+    mapping(address => uint256[]) private addressToIndices;
+
     function burn(uint256 amount) public override {
-        if (s_lotteryState != LotteryState.OPEN) {
-            revert OurLady__LotteryNotOpen();
-        }
         super.burn(amount);
         uint256 entries = amount / 1000;
-        for (uint256 i = 0; i < entries; i++)
-            s_participants.push(payable(msg.sender));
-        // Emit an event when we update a dynamic array or mapping
-        emit LotteryEnter(msg.sender, amount, block.timestamp);
+        for (uint256 i = 0; i < entries; i++) {
+            participants.push(msg.sender);
+            addressToIndices[msg.sender].push(participants.length - 1);
+        }
+        emit LotteryEnter(msg.sender, amount, participants.length);
+    }
+
+    function getParticipantAt(uint256 index) public view returns (address) {
+        require(index < participants.length, "Index out of bounds");
+        return participants[index];
+    }
+
+    // Function to get a participant's indices and the total length of the s_participants array
+    function getParticipantInfo(
+        address participant
+    ) public view returns (uint256[] memory indices, uint256 totalEntries) {
+        return (addressToIndices[participant], participants.length);
     }
 
     function _transfer(
@@ -252,6 +271,7 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
      * @dev This is the function that Chainlink VRF node
      * calls to send the money to the random winner.
      */
+
     function fulfillRandomWords(
         uint256 /* requestId */,
         uint256[] memory randomWords
@@ -262,7 +282,7 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         s_participants = new address payable[](0);
         s_lotteryState = LotteryState.OPEN;
         s_lastTimeStamp = block.timestamp;
-        emit WinnerSelected(recentWinner);
+        emit WinnerSelected(recentWinner, randomWords[0], s_lastTimeStamp);
         uint256 rewardsBalance = balanceOf(ourLadyRewardsWallet);
         uint256 amountToSend = (rewardsBalance * 80) / 100; // 80% of rewards balance, make sure it only transfers the OurLady tokens.
         (bool success, ) = ourLadyRewardsWallet.call{value: amountToSend}(""); // Send 80% of the rewards balance to the WinnerSelected
@@ -406,6 +426,4 @@ abstract contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     function getNumberOfParticipants() public view returns (uint256) {
         return s_participants.length;
     }
-
-    receive() external payable {}
 }
