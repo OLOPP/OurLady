@@ -13,6 +13,7 @@ import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/interface
 import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import {AutomationCompatibleInterface} from "@chainlink/contracts/src/v0.8/interfaces/AutomationCompatibleInterface.sol";
+import "lib/LinkTokenInterface.sol";
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -24,6 +25,80 @@ import {IUniswapV2Factory} from "@uniswap/v2-core/contracts/interfaces/IUniswapV
 import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 
 contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
+    /* Errors */
+    error OurLady__UpkeepNotNeeded(
+        uint256 currentEthBalance,
+        uint256 currentLinkBalance,
+        uint256 numParticipants,
+        uint256 lotteryState
+    );
+    error OurLady__TransferFailed();
+    error OurLady__LotteryNotOpen();
+
+    /* Type declarations */
+    enum LotteryState {
+        OPEN,
+        CALCULATING
+    }
+
+    struct ParticipantData {
+        uint256[] indices;
+        uint256 validFromLotteryId;
+    }
+
+    mapping(address => ParticipantData) private addressToIndices;
+
+    /* State variables */
+
+    uint256 public constant MAX_HOLDING = 1e16; // 1% of total supply
+    uint256 public constant TAX_RATE = 200; // 2%
+    uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
+    uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
+
+    IUniswapV2Router02 uniswapV2Router;
+    address public uniswapV2Pair;
+    address payable public ourLadyRewardsWallet;
+    uint256 public deploymentTime;
+    bool public tradingEnabled = false;
+
+    // Chainlink VRF Variables
+    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
+    uint64 private immutable i_subscriptionId;
+    bytes32 private immutable i_gasLane; // aka 'keyHash'
+    uint32 private immutable i_callbackGasLimit;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3;
+    uint32 private constant NUM_WORDS = 2;
+    address private constant LINK_TOKEN =
+        0x514910771AF9Ca656af840dff83E8264EcF986CA; //use this if price feed used
+    address private constant ETH_LINK_PRICE_FEED =
+        0xDC530D9457755926550b59e8ECcdaE7624181557;
+
+    // Declare LINKTOKEN as an instance of the LINK token contract
+    LinkTokenInterface public LINKTOKEN;
+
+    // Lottery Variables
+    uint256 private immutable i_interval; // do i need this?
+    uint256 private s_lastTimeStamp; // I won't need This?
+    address private s_recentWinner;
+    address payable[] private s_participants;
+    LotteryState private s_lotteryState;
+    address[] public participants;
+    uint256 private currentLotteryId;
+
+    /* Events */
+    event RequestedLotteryWinner(uint256 indexed requestId);
+    event LotteryEnter(
+        address indexed participant,
+        uint256 amount,
+        uint256 timestamp
+    );
+    event WinnerSelected(
+        address indexed participant,
+        uint256 randomNum,
+        uint256 timestamp
+    );
+
+    /* Functions */
     constructor(
         address initialOwner,
         uint64 subscriptionId,
@@ -58,100 +133,28 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         s_lotteryState = LotteryState.OPEN;
         s_lastTimeStamp = block.timestamp;
         i_callbackGasLimit = callbackGasLimit;
+
+        LINKTOKEN = LinkTokenInterface(LINK_TOKEN);
     }
-
-    /* State variables */
-
-    uint256 public constant MAX_HOLDING = 1e16; // 1% of total supply
-    uint256 public constant INITIAL_TAX_RATE = 200; // 2%
-    uint256 public constant REDUCED_TAX_RATE = 100; // 1%
-    uint256 public constant TAX_REDUCTION_TIME = 30 days;
-    uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
-    uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
-
-    IUniswapV2Router02 uniswapV2Router;
-    address public uniswapV2Pair;
-    address payable public ourLadyRewardsWallet;
-    uint256 public deploymentTime;
-    bool public tradingEnabled = false;
-
-    // Chainlink VRF Variables
-    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
-    uint64 private immutable i_subscriptionId;
-    bytes32 private immutable i_gasLane; // aka 'keyHash'
-    uint32 private immutable i_callbackGasLimit;
-    uint16 private constant REQUEST_CONFIRMATIONS = 3;
-    uint32 private constant NUM_WORDS = 2;
-    address private constant LINK_TOKEN =
-        0x514910771AF9Ca656af840dff83E8264EcF986CA; //use this if price feed used
-    address private constant ETH_LINK_PRICE_FEED =
-        0xDC530D9457755926550b59e8ECcdaE7624181557;
-
-    // Lottery Variables
-    uint256 private immutable i_interval; // do i need this?
-    uint256 private s_lastTimeStamp; // I won't need This?
-    address private s_recentWinner;
-    address payable[] private s_participants;
-    LotteryState private s_lotteryState;
-    address[] public participants;
-
-    /* Errors */
-    error OurLady__UpkeepNotNeeded(
-        uint256 currentEthBalance,
-        uint256 currentLinkBalance,
-        uint256 numParticipants,
-        uint256 lotteryState
-    );
-    error OurLady__TransferFailed();
-    error OurLady__LotteryNotOpen();
-
-    /* Type declarations */
-    enum LotteryState {
-        OPEN,
-        CALCULATING
-    }
-
-    /* Events */
-    event RequestedLotteryWinner(uint256 indexed requestId);
-    event LotteryEnter(
-        address indexed participant,
-        uint256 amount,
-        uint256 timestamp
-    );
-    event WinnerSelected(
-        address indexed participant,
-        uint256 randomNum,
-        uint256 timestamp
-    );
-
-    /* Functions */
-
-    function renounceOwnership() public override onlyOwner {
-        super.renounceOwnership();
-    }
-
-    mapping(address => uint256[]) private addressToIndices;
 
     function burn(uint256 amount) public override {
         super.burn(amount);
         uint256 entries = amount / 1000;
+
+        // Access the ParticipantData struct from the mapping
+        ParticipantData storage participantData = addressToIndices[msg.sender];
+
+        if (participantData.validFromLotteryId != currentLotteryId) {
+            participantData.indices = new uint256[](0);
+            participantData.validFromLotteryId = currentLotteryId;
+        }
+
         for (uint256 i = 0; i < entries; i++) {
             participants.push(msg.sender);
-            addressToIndices[msg.sender].push(participants.length - 1);
+            participantData.indices.push(participants.length - 1);
         }
+
         emit LotteryEnter(msg.sender, amount, participants.length);
-    }
-
-    function getParticipantAt(uint256 index) public view returns (address) {
-        require(index < participants.length, "Index out of bounds");
-        return participants[index];
-    }
-
-    // Function to get a participant's indices and the total length of the s_participants array
-    function getParticipantInfo(
-        address participant
-    ) public view returns (uint256[] memory indices, uint256 totalEntries) {
-        return (addressToIndices[participant], participants.length);
     }
 
     function _transfer(
@@ -185,7 +188,7 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
 
         // Apply tax if it's a Uniswap trade and not tax exempt
         if (isUniswapTrade && !isTaxExempt) {
-            uint256 taxAmount = calculateTax(amount);
+            uint256 taxAmount = (amount * 2) / 100; // 2% tax
             tokensToTransfer -= taxAmount;
 
             if (taxAmount > 0) {
@@ -255,6 +258,13 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         ) {
             maintainMinLinkBalance();
         }
+
+        // Check and top up Chainlink subscription balance
+        uint96 subscriptionBalance = checkSubscriptionBalance(i_subscriptionId);
+        if (subscriptionBalance < 5) {
+            topUpSubscription(5 - subscriptionBalance);
+        }
+
         s_lotteryState = LotteryState.CALCULATING;
         uint256 requestId = i_vrfCoordinator.requestRandomWords(
             i_gasLane,
@@ -273,7 +283,7 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
      */
 
     function fulfillRandomWords(
-        uint256 /* requestId */,
+        uint256 /*requestId,*/,
         uint256[] memory randomWords
     ) internal override {
         uint256 indexOfWinner = randomWords[0] % s_participants.length;
@@ -292,11 +302,15 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         }
     }
 
-    function calculateTax(uint256 amount) private view returns (uint256) {
-        uint256 taxRate = block.timestamp > deploymentTime + TAX_REDUCTION_TIME
-            ? REDUCED_TAX_RATE
-            : INITIAL_TAX_RATE;
-        return (amount * taxRate) / 10000;
+    // function calculateTax(uint256 amount) private view returns (uint256) {
+    //     uint256 taxRate = block.timestamp > deploymentTime + TAX_REDUCTION_TIME
+    //         ? REDUCED_TAX_RATE
+    //         : INITIAL_TAX_RATE;
+    //     return (amount * taxRate) / 10000;
+    // }
+
+    function renounceOwnership() public override onlyOwner {
+        super.renounceOwnership();
     }
 
     ////////////////////////////////////
@@ -389,6 +403,16 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         );
     }
 
+    // Assumes this contract owns link.
+    // 1000000000000000000 = 1 LINK
+    function topUpSubscription(uint256 amount) internal onlyOwner {
+        LINKTOKEN.transferAndCall(
+            address(i_vrfCoordinator),
+            amount,
+            abi.encode(i_subscriptionId)
+        );
+    }
+
     /** Getter Functions */
 
     function getLotteryState() public view returns (LotteryState) {
@@ -425,5 +449,27 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
 
     function getNumberOfParticipants() public view returns (uint256) {
         return s_participants.length;
+    }
+
+    function getParticipantAt(uint256 index) public view returns (address) {
+        require(index < participants.length, "Index out of bounds");
+        return participants[index];
+    }
+
+    // Function to get a participant's indices and the total length of the s_participants array
+    function getParticipantInfo(
+        address participant
+    ) public view returns (uint256[] memory, uint256) {
+        ParticipantData storage participantData = addressToIndices[participant];
+
+        // Returning the indices array and the validFromLotteryId
+        return (participantData.indices, participantData.validFromLotteryId);
+    }
+
+    function checkSubscriptionBalance(
+        uint64 subId
+    ) public view returns (uint96) {
+        (uint96 balance, , , ) = i_vrfCoordinator.getSubscription(subId);
+        return balance;
     }
 }

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-import {Script} from "forge-std/Script.sol";
-import {HelperConfig} from "../script/HelperConfig.s.sol";
-import {OurLady} from "../src/OurLady.sol";
-import {AddConsumer, CreateSubscription, FundSubscription} from "./Interactions.s.sol";
+// import {Script} from "forge-std/Script.sol";
+// import {HelperConfig} from "../script/HelperConfig.s.sol";
+import {OurLady} from "src/OurLady.sol";
 
-contract DeployOurLady is Script {
+// import {AddConsumer, CreateSubscription, FundSubscription} from "./Interactions.s.sol";
+
+/*is Script*/ contract DeployOurLady {
     function run() external returns (OurLady, HelperConfig) {
         HelperConfig helperConfig = new HelperConfig(); // This comes with our mocks!
         AddConsumer addConsumer = new AddConsumer();
