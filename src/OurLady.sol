@@ -3,7 +3,7 @@
  * www.ourlady.io
  * twitter.com/ourladytoken
  * https://t.me/ourladytoken
- * @dev OurLadyToken is an irreverent but ethical and fair-launched hybrid utility/meme Token.
+ * @dev OurLadyToken is an irreverent but ethical and fair-launched hybrid Defi/Utility and meme Token.
  */
 // SPDX-License-Identifier: MIT
 
@@ -41,17 +41,10 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         CALCULATING
     }
 
-    struct ParticipantData {
-        uint256[] indices;
-        uint256 validFromLotteryId;
-    }
-
-    mapping(address => ParticipantData) private addressToIndices;
-
     /* State variables */
 
     uint256 public constant MAX_HOLDING = 1e16; // 1% of total supply
-    uint256 public constant TAX_RATE = 200; // 2%
+    uint256 public constant TAX_RATE = 100; // 1%
     uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
     uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
 
@@ -87,8 +80,9 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
 
     /* Events */
     event RequestedLotteryWinner(uint256 indexed requestId);
-    event LotteryEnter(
+    event LotteryEntry(
         address indexed participant,
+        uint256 indexed entryIndex,
         uint256 amount,
         uint256 timestamp
     );
@@ -112,7 +106,6 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         VRFConsumerBaseV2(vrfCoordinatorV2)
     {
         _mint(msg.sender, 10 * 10 ** 27); //10 Billion Tokens
-        deploymentTime = block.timestamp;
 
         // Initialize Uniswap V2 Router
         uniswapV2Router = IUniswapV2Router02(
@@ -141,20 +134,15 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         super.burn(amount);
         uint256 entries = amount / 1000;
 
-        // Access the ParticipantData struct from the mapping
-        ParticipantData storage participantData = addressToIndices[msg.sender];
-
-        if (participantData.validFromLotteryId != currentLotteryId) {
-            participantData.indices = new uint256[](0);
-            participantData.validFromLotteryId = currentLotteryId;
-        }
-
         for (uint256 i = 0; i < entries; i++) {
-            participants.push(msg.sender);
-            participantData.indices.push(participants.length - 1);
+            s_participants.push(payable(msg.sender));
+            emit LotteryEntry(
+                msg.sender,
+                s_participants.length - 1,
+                amount,
+                block.timestamp
+            );
         }
-
-        emit LotteryEnter(msg.sender, amount, participants.length);
     }
 
     function _transfer(
@@ -302,13 +290,6 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         }
     }
 
-    // function calculateTax(uint256 amount) private view returns (uint256) {
-    //     uint256 taxRate = block.timestamp > deploymentTime + TAX_REDUCTION_TIME
-    //         ? REDUCED_TAX_RATE
-    //         : INITIAL_TAX_RATE;
-    //     return (amount * taxRate) / 10000;
-    // }
-
     function renounceOwnership() public override onlyOwner {
         super.renounceOwnership();
     }
@@ -454,16 +435,6 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     function getParticipantAt(uint256 index) public view returns (address) {
         require(index < participants.length, "Index out of bounds");
         return participants[index];
-    }
-
-    // Function to get a participant's indices and the total length of the s_participants array
-    function getParticipantInfo(
-        address participant
-    ) public view returns (uint256[] memory, uint256) {
-        ParticipantData storage participantData = addressToIndices[participant];
-
-        // Returning the indices array and the validFromLotteryId
-        return (participantData.indices, participantData.validFromLotteryId);
     }
 
     function checkSubscriptionBalance(
