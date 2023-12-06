@@ -3,7 +3,7 @@
  * www.ourlady.io
  * twitter.com/ourladytoken
  * https://t.me/ourladytoken
- * @dev OurLadyToken is an irreverent but ethical and fair-launched hybrid Defi/Utility and meme Token.
+ * OurLadyToken is an irreverent but ethical and fair-launched hybrid Defi/Utility and meme Token.
  */
 // SPDX-License-Identifier: MIT
 
@@ -29,8 +29,8 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     error OurLady__UpkeepNotNeeded(
         uint256 currentEthBalance,
         uint256 currentLinkBalance,
-        uint256 numParticipants,
-        uint256 lotteryState
+        uint256 lotteryState,
+        bool hasParticipants
     );
     error OurLady__TransferFailed();
     error OurLady__LotteryNotOpen();
@@ -44,17 +44,19 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     /* State variables */
 
     uint256 public constant MAX_HOLDING = 1e16; // 1% of total supply
-    uint256 public constant TAX_RATE = 100; // 1%
+    uint256 public constant TAX_RATE = 1; // 1%
+    uint256 public immutable deploymentTime;
+    uint256 public constant TAX_DURATION = 0 days;
     uint256 public constant MIN_ETH_BALANCE = 0.2 ether;
-    uint256 public constant MINIMUM_LINK_BALANCE = 10 * 10 ** 18; // 10 LINK
+    uint256 public constant MINIMUM_LINK_BALANCE = 2 * 10 ** 18; // 5 LINK
+    address payable public RL80treasuryWallet = payable(address(this)); // Our Lady Rewards Wallet
 
     IUniswapV2Router02 uniswapV2Router;
     address public uniswapV2Pair;
-    address payable public ourLadyRewardsWallet;
-    uint256 public deploymentTime;
     bool public tradingEnabled = false;
 
     // Chainlink VRF Variables
+
     VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
     uint64 private immutable i_subscriptionId;
     bytes32 private immutable i_gasLane; // aka 'keyHash'
@@ -70,26 +72,25 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
     LinkTokenInterface public LINKTOKEN;
 
     // Lottery Variables
-    uint256 private immutable i_interval; // do i need this?
-    uint256 private s_lastTimeStamp; // I won't need This?
-    address private s_recentWinner;
-    address payable[] private s_participants;
-    LotteryState private s_lotteryState;
-    address[] public participants;
-    uint256 private currentLotteryId;
 
-    /* Events */
+    LotteryState private s_lotteryState;
+    address payable[] private s_participants;
+    uint256 private immutable i_interval;
+    uint256 private s_lastTimeStamp;
+
     event RequestedLotteryWinner(uint256 indexed requestId);
+
     event LotteryEntry(
         address indexed participant,
-        uint256 indexed entryIndex,
-        uint256 amount,
-        uint256 timestamp
+        uint256 totalEntries,
+        uint256 indexed timestamp,
+        uint256 indexPosition // Added field for index position
     );
+
     event WinnerSelected(
-        address indexed participant,
-        uint256 randomNum,
-        uint256 timestamp
+        uint256 indexed winningIndex,
+        uint256 indexed winningIndex2,
+        uint256 indexed timestamp
     );
 
     /* Functions */
@@ -101,11 +102,12 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         uint32 callbackGasLimit,
         address vrfCoordinatorV2
     )
-        ERC20("Our Lady Of Perpetual Profit", "OURLADY")
+        ERC20("Our Lady", "RL80")
         Ownable(initialOwner)
         VRFConsumerBaseV2(vrfCoordinatorV2)
     {
         _mint(msg.sender, 10 * 10 ** 27); //10 Billion Tokens
+        deploymentTime = block.timestamp;
 
         // Initialize Uniswap V2 Router
         uniswapV2Router = IUniswapV2Router02(
@@ -116,7 +118,7 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
                 uniswapV2Router.WETH()
             );
 
-        ourLadyRewardsWallet = payable(msg.sender); // Set to deployer initially
+        RL80treasuryWallet = payable(msg.sender); // Set to deployer initially
 
         // VRFConsumerBaseV2 initialization
         i_vrfCoordinator = VRFCoordinatorV2Interface(vrfCoordinatorV2);
@@ -130,17 +132,25 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         LINKTOKEN = LinkTokenInterface(LINK_TOKEN);
     }
 
+    function enableTrading() public onlyOwner {
+        tradingEnabled = true;
+    }
+
     function burn(uint256 amount) public override {
+        if (s_lotteryState != LotteryState.OPEN) {
+            revert OurLady__LotteryNotOpen();
+        }
         super.burn(amount);
         uint256 entries = amount / 1000;
+        uint256 indexPosition = s_participants.length;
 
         for (uint256 i = 0; i < entries; i++) {
             s_participants.push(payable(msg.sender));
             emit LotteryEntry(
                 msg.sender,
-                s_participants.length - 1,
                 amount,
-                block.timestamp
+                block.timestamp,
+                indexPosition + i
             );
         }
     }
@@ -150,41 +160,32 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         address recipient,
         uint256 amount
     ) internal override {
-        // Check if sender or recipient is the contract itself, the owner, or the Uniswap pair
-        bool isExemptFromHoldingLimit = (sender == address(this) ||
+        // Check if trading is enabled or if the transfer is to the contract itself
+        require(
+            tradingEnabled || recipient == address(this),
+            "Trading is not enabled"
+        );
+
+        bool isTaxExempt = (sender == address(this) ||
             recipient == address(this) ||
             sender == owner() ||
-            recipient == owner() ||
-            sender == uniswapV2Pair ||
-            recipient == uniswapV2Pair);
+            recipient == owner());
 
-        if (!isExemptFromHoldingLimit) {
+        if (!isTaxExempt && recipient != owner()) {
             require(
                 balanceOf(recipient) + amount <= MAX_HOLDING,
                 "Transfer exceeds maximum holding"
             );
         }
 
-        // Check if sender or recipient is the contract itself or the owner for tax exemption
-        bool isTaxExempt = isExemptFromHoldingLimit;
-
-        // Check if this is a Uniswap trade
-        bool isUniswapTrade = (sender == uniswapV2Pair ||
-            recipient == uniswapV2Pair);
-
-        uint256 tokensToTransfer = amount;
-
-        // Apply tax if it's a Uniswap trade and not tax exempt
-        if (isUniswapTrade && !isTaxExempt) {
-            uint256 taxAmount = (amount * 2) / 100; // 2% tax
-            tokensToTransfer -= taxAmount;
-
-            if (taxAmount > 0) {
-                super._transfer(sender, ourLadyRewardsWallet, taxAmount);
-            }
+        if (!isTaxExempt && block.timestamp <= deploymentTime + TAX_DURATION) {
+            uint256 tax = (amount * TAX_RATE) / 100;
+            uint256 amountAfterTax = amount - tax;
+            super._transfer(sender, address(this), tax);
+            amount = amountAfterTax;
         }
 
-        super._transfer(sender, recipient, tokensToTransfer);
+        super._transfer(sender, recipient, amount);
     }
 
     function setUniswapPairAddress(
@@ -197,26 +198,27 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
      * @dev This is the function that the Chainlink Keeper nodes call
      * they look for `upkeepNeeded` to return True.
      * the following should be true for this to return true:
-     * 1. The time interval has passed between raffle runs.
+     * 1. The time interval has passed between lottery events.
      * 2. The lottery is open.
-     * 3. The contract has ETH.
-     * 4. Implicity, your subscription is funded with LINK.
+     * 3. There are partiipants.
+     * 4. The contract has ETH and LINK.
      */
     function checkUpkeep(
         bytes memory /* checkData */
     ) public view returns (bool upkeepNeeded, bytes memory /* performData */) {
-        bool isOpen = LotteryState.OPEN == s_lotteryState;
-        //bool timePassed = ((block.timestamp - s_lastTimeStamp) > i_interval); I don't think I need this
-        bool hasParticipants = s_participants.length > 0;
-        bool hasMinimumEth = address(ourLadyRewardsWallet).balance >=
+        bool timePassed = ((block.timestamp - s_lastTimeStamp) > i_interval);
+        bool hasMinimumEth = address(RL80treasuryWallet).balance >=
             MIN_ETH_BALANCE;
         bool hasMinimumLink = IERC20(0x779877A7B0D9E8603169DdbD7836e478b4624789)
-            .balanceOf(ourLadyRewardsWallet) >= MINIMUM_LINK_BALANCE;
-        upkeepNeeded = (isOpen &&
+            .balanceOf(RL80treasuryWallet) >= MINIMUM_LINK_BALANCE;
+        bool isOpen = LotteryState.OPEN == s_lotteryState;
+        bool hasParticipants = s_participants.length > 0;
+        upkeepNeeded = (timePassed &&
             hasMinimumEth &&
             hasMinimumLink &&
+            isOpen &&
             hasParticipants);
-        return (upkeepNeeded, "0x0"); // can we comment this out?
+        return (upkeepNeeded, "0x0"); // performData is unused.
     }
 
     /**
@@ -225,35 +227,36 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
      */
     function performUpkeep(bytes calldata /* performData */) external {
         (bool upkeepNeeded, ) = checkUpkeep("");
-        // require(upkeepNeeded, "Upkeep not needed");
         if (!upkeepNeeded) {
             revert OurLady__UpkeepNotNeeded(
-                address(ourLadyRewardsWallet).balance,
+                address(RL80treasuryWallet).balance,
                 IERC20(0x779877A7B0D9E8603169DdbD7836e478b4624789).balanceOf(
-                    ourLadyRewardsWallet
+                    RL80treasuryWallet
                 ),
-                s_participants.length,
-                uint256(s_lotteryState)
+                uint256(s_lotteryState),
+                s_participants.length > 0
             );
         }
-        if (address(this).balance < MIN_ETH_BALANCE) {
+        //CHECK IF CONTRACT HAS ENOUGH LINK
+        if (address(RL80treasuryWallet).balance < MIN_ETH_BALANCE) {
             maintainMinEthBalance();
         }
         if (
             IERC20(0x779877A7B0D9E8603169DdbD7836e478b4624789).balanceOf(
-                address(this)
+                RL80treasuryWallet
             ) < MINIMUM_LINK_BALANCE
         ) {
             maintainMinLinkBalance();
         }
 
         // Check and top up Chainlink subscription balance
-        uint96 subscriptionBalance = checkSubscriptionBalance(i_subscriptionId);
-        if (subscriptionBalance < 5) {
-            topUpSubscription(5 - subscriptionBalance);
+
+        if (MINIMUM_LINK_BALANCE < 5) {
+            topUpSubscription(5 - MINIMUM_LINK_BALANCE);
         }
 
         s_lotteryState = LotteryState.CALCULATING;
+
         uint256 requestId = i_vrfCoordinator.requestRandomWords(
             i_gasLane,
             i_subscriptionId,
@@ -261,37 +264,36 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
             i_callbackGasLimit,
             NUM_WORDS
         );
-
+        // Quiz... is this redundant?
         emit RequestedLotteryWinner(requestId);
     }
 
     /**
-     * @dev This is the function that Chainlink VRF node
+     * This is the function that Chainlink VRF node
      * calls to send the money to the random winner.
      */
 
     function fulfillRandomWords(
-        uint256 /*requestId,*/,
+        uint256 /* requestId */,
         uint256[] memory randomWords
     ) internal override {
         uint256 indexOfWinner = randomWords[0] % s_participants.length;
-        address payable recentWinner = s_participants[indexOfWinner];
-        s_recentWinner = recentWinner;
-        s_participants = new address payable[](0);
-        s_lotteryState = LotteryState.OPEN;
-        s_lastTimeStamp = block.timestamp;
-        emit WinnerSelected(recentWinner, randomWords[0], s_lastTimeStamp);
-        uint256 rewardsBalance = balanceOf(ourLadyRewardsWallet);
-        uint256 amountToSend = (rewardsBalance * 80) / 100; // 80% of rewards balance, make sure it only transfers the OurLady tokens.
-        (bool success, ) = ourLadyRewardsWallet.call{value: amountToSend}(""); // Send 80% of the rewards balance to the WinnerSelected
-        // require(success, "Transfer failed");
+        address payable lotteryWinner = s_participants[indexOfWinner];
+
+        // Get the balance of RL80 tokens held by this contract
+        uint256 rewardsBalance = balanceOf(address(this));
+        uint256 amountToSend = (rewardsBalance * 80) / 100; // 80% of rewards balance
+
+        // Transfer 80% of the RL80 tokens to the lottery winner
+        IERC20 tokenContract = IERC20(RL80treasuryWallet);
+        bool success = tokenContract.transfer(lotteryWinner, amountToSend);
         if (!success) {
             revert OurLady__TransferFailed();
         }
-    }
-
-    function renounceOwnership() public override onlyOwner {
-        super.renounceOwnership();
+        s_participants = new address payable[](0);
+        s_lotteryState = LotteryState.OPEN;
+        s_lastTimeStamp = block.timestamp;
+        emit WinnerSelected(indexOfWinner, randomWords[1], block.timestamp);
     }
 
     ////////////////////////////////////
@@ -408,39 +410,11 @@ contract OurLady is ERC20, ERC20Burnable, Ownable, VRFConsumerBaseV2 {
         return REQUEST_CONFIRMATIONS;
     }
 
-    function getRecentWinner() public view returns (address) {
-        return s_recentWinner;
-    }
-
-    function getParticipant(uint256 index) public view returns (address) {
-        return s_participants[index];
+    function getSubscriptionId() public view returns (uint256) {
+        return i_subscriptionId;
     }
 
     function getLastTimeStamp() public view returns (uint256) {
         return s_lastTimeStamp;
-    }
-
-    function getInterval() public view returns (uint256) {
-        return i_interval;
-    }
-
-    // function getEntranceFee() public view returns (uint256) {
-    //     return i_entranceFee;
-    // }
-
-    function getNumberOfParticipants() public view returns (uint256) {
-        return s_participants.length;
-    }
-
-    function getParticipantAt(uint256 index) public view returns (address) {
-        require(index < participants.length, "Index out of bounds");
-        return participants[index];
-    }
-
-    function checkSubscriptionBalance(
-        uint64 subId
-    ) public view returns (uint96) {
-        (uint96 balance, , , ) = i_vrfCoordinator.getSubscription(subId);
-        return balance;
     }
 }
